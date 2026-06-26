@@ -1,18 +1,12 @@
 // =============================================================
-//  app.js  -  liga a interface ao nucleo Modbus.
-//
-//  Estrategia:
-//   1) Tenta carregar o C++ compilado para WebAssembly (modbus.js).
-//   2) Se nao existir ainda, usa o espelho em JavaScript (modbus-core.js).
-//  Em ambos os casos a interface se comporta igual.
+//  app.js - Versão Final Completa com Escrita Dinâmica Diferenciada
 // =============================================================
 
-let core = null;       // adaptador unificado (WASM ou JS)
+let core = null;       
 let usingWasm = false;
 
-// ---------- Adaptador para a versao C++ (WASM) ----------
 async function tryLoadWasm() {
-  if (typeof createModbusModule !== "function") return null; // modbus.js ausente
+  if (typeof createModbusModule !== "function") return null; 
   const Module = await createModbusModule();
 
   const _write = Module.cwrap("writeSingleRegister", "number", ["number", "number"]);
@@ -25,15 +19,13 @@ async function tryLoadWasm() {
   const _asciiP = Module.cwrap("getAsciiBuffer", "number", []);
   const _setMode = Module.cwrap("setMode", null, ["number"]);
 
-  // Acessa a memoria do WASM de forma robusta: usa HEAPU8 se o build
-  // o expos; senao, le direto do buffer da memoria (wasmMemory/asm.memory).
   function heap() {
     if (Module.HEAPU8) return Module.HEAPU8;
     const mem =
       (Module.wasmMemory && Module.wasmMemory.buffer) ||
       (Module.asm && Module.asm.memory && Module.asm.memory.buffer);
     if (mem) return new Uint8Array(mem);
-    throw new Error("Memoria do WASM inacessivel (exporte HEAPU8 no emcc)");
+    throw new Error("Memoria do WASM inacessivel");
   }
 
   function frameBytes() {
@@ -65,25 +57,38 @@ async function tryLoadWasm() {
   };
 }
 
-// ---------- Adaptador para o espelho JavaScript ----------
 function jsAdapter() {
   const M = window.ModbusJS;
   return {
     NUM_REGS: M.NUM_REGS,
-    setMode() { /* o espelho JS sempre gera os dois formatos */ },
+    setMode() {},
     write(addr, value) {
       const r = M.writeSingleRegister(addr, value);
-      return r.error ? r : { frame: r.frame, ascii: r.ascii, explain: r.explain };
+      return r.error ? r : { 
+        frame: r.frame, 
+        ascii: r.ascii, 
+        explain: r.explain, 
+        isException: r.isException,
+        func: r.func,
+        reqFrame: r.reqFrame,
+        reqAscii: r.reqAscii
+      };
     },
     read(addr, count) {
       const r = M.readHoldingRegisters(addr, count);
-      return r.error ? r : { frame: r.frame, ascii: r.ascii, explain: r.explain };
+      return r.error ? r : { 
+        frame: r.frame, 
+        ascii: r.ascii, 
+        explain: r.explain, 
+        isException: r.isException,
+        reqFrame: r.reqFrame, 
+        reqAscii: r.reqAscii 
+      };
     },
     registers() { return M.getRegisters(); },
   };
 }
 
-// ---------- Elementos ----------
 const el = (id) => document.getElementById(id);
 const regGrid = el("regGrid");
 const log = el("log");
@@ -93,35 +98,54 @@ function hex(bytes) {
   return bytes.map((b) => b.toString(16).toUpperCase().padStart(2, "0")).join(" ");
 }
 
-// Modo de transmissao atual: "RTU" ou "ASCII".
 let mode = "RTU";
 
-// Deixa a string ASCII visivel trocando CR/LF por marcadores legiveis.
 function asciiVisible(s) {
   return s.replace(/\r/g, "<CR>").replace(/\n/g, "<LF>");
 }
 
-// ---------- Render dos registradores ----------
+function parseCommercialAddress(val) {
+  if (val >= 40001) return val - 40001; 
+  if (val >= 30001) return val - 30001; 
+  if (val >= 10001) return val - 10001; 
+  if (val >= 13 && val <= 16) return val - 1;     
+  return val; 
+}
+
 function renderRegs(highlight, klass) {
   const vals = core.registers();
   regGrid.innerHTML = "";
   vals.forEach((v, i) => {
     const d = document.createElement("div");
     d.className = "reg" + (highlight && highlight.includes(i) ? " " + klass : "");
-    d.innerHTML = `<div class="idx">R${i}</div><div class="val">${v}</div>`;
+    
+    let label = `R${i}`;
+    
+    if (i >= 0 && i <= 3) {
+      d.style.borderColor = "var(--amber)"; 
+      label = String(40001 + i);
+    } else if (i >= 4 && i <= 7) {
+      d.style.borderColor = "var(--cyan)";  
+      label = String(30001 + i);
+    } else if (i >= 8 && i <= 11) {
+      d.style.borderColor = "var(--ink-soft)"; 
+      label = String(10001 + i);
+    } else if (i >= 12 && i <= 15) {
+      d.style.borderColor = "var(--green)"; 
+      label = String(i + 1).padStart(5, '0');
+    }
+    
+    d.innerHTML = `<div class="idx">${label}</div><div class="val">${v}</div>`;
     regGrid.appendChild(d);
   });
 }
 
-// ---------- Animacao do pacote no barramento ----------
 function animatePacket(text, dir) {
   packet.textContent = text;
   packet.className = "packet " + (dir === "right" ? "go-right" : "go-left");
-  // reinicia a animacao
   void packet.offsetWidth;
 }
 
-// ---------- Registro no monitor ----------
 function logEntry(kind, dirLabel, result, desc) {
   const empty = log.querySelector(".log__empty");
   if (empty) empty.remove();
@@ -143,42 +167,73 @@ function logEntry(kind, dirLabel, result, desc) {
     `<span class="modetag">[${mode}]</span> ` +
     `<span style="color:var(--ink-soft);font-weight:400">${ts}</span></div>` +
     frameHtml +
-    `<div class="desc">${desc}</div>`;
+    `<div class="desc" style="white-space: pre-wrap;">${desc}</div>`;
   log.prepend(e);
 }
 
-// ---------- Acoes ----------
+// ---------- Ações de Escrita Diferenciadas ----------
 function doWrite() {
-  const addr = parseInt(el("wAddr").value, 10);
+  const rawInput = el("wAddr").value;
+  const addr = parseCommercialAddress(rawInput); 
   const value = parseInt(el("wValue").value, 10);
   const r = core.write(addr, value);
   if (r.error) { logEntry("err", "✕ ESCRITA RECUSADA", null, r.error); return; }
 
-  animatePacket(`06 → R${addr}=${value}`, "right");
+  // Descobre qual seria o FC de escrita correto para rotular os títulos na tela
+  let fc = (addr >= 12 && addr <= 15) ? 0x05 : 0x06;
+  const fcHex = fc.toString(16).padStart(2, "0").toUpperCase();
+
+  // 1. Registra a Ida com o código dinâmico (FC05 ou FC06)
+  const reqResult = { frame: r.reqFrame, ascii: r.reqAscii };
+  logEntry("write", `▶ MESTRE → ESCRAVO  (FC${fcHex} Solicitação)`, reqResult, `Mestre enviando comando de escrita para o endereço mapeado.`);
+
+  animatePacket(`${fcHex} → R[${addr}]=${value}`, "right");
   setTimeout(() => {
-    renderRegs([addr], "flash");
-    animatePacket("06 ✓ eco", "left");
-    logEntry("write", "▶ MESTRE → ESCRAVO  (FC06 escrita)", r, r.explain);
+    if (r.isException) {
+      const excHex = r.func.toString(16).toUpperCase(); // Pega 85 ou 86 da resposta
+      animatePacket(`${excHex} ✕ erro`, "left");
+      logEntry("err", `◀ ESCRAVO → MESTRE  (FC${excHex} Resposta com Exceção)`, r, r.explain);
+    } else {
+      renderRegs([addr], "flash");
+      animatePacket(`${fcHex} ✓ eco`, "left");
+      logEntry("write", `◀ ESCRAVO → MESTRE  (FC${fcHex} Resposta/Eco)`, r, r.explain);
+    }
   }, 900);
 }
 
+// ---------- Ações de Leitura ----------
 function doRead() {
-  const addr = parseInt(el("rAddr").value, 10);
+  const rawInput = el("rAddr").value;
+  const addr = parseCommercialAddress(rawInput); 
   const count = parseInt(el("rCount").value, 10);
   const r = core.read(addr, count);
   if (r.error) { logEntry("err", "✕ LEITURA RECUSADA", null, r.error); return; }
 
-  animatePacket(`03 → ler ${count}`, "right");
+  let fc = 0x03;
+  if (addr >= 4 && addr <= 7) fc = 0x04;
+  if (addr >= 8 && addr <= 11) fc = 0x02;
+  if (addr >= 12 && addr <= 15) fc = 0x01;
+  const fcHex = fc.toString(16).padStart(2, "0").toUpperCase();
+
+  const reqResult = { frame: r.reqFrame, ascii: r.reqAscii };
+  logEntry("read", `▶ MESTRE → ESCRAVO  (FC${fcHex} Solicitação)`, reqResult, `Mestre solicitando leitura a partir do endereço mapeado (Offset Enviado no Frame: ${addr}).`);
+
+  animatePacket(`${fcHex} → ler`, "right");
   setTimeout(() => {
-    const idx = [];
-    for (let i = 0; i < count; i++) idx.push(addr + i);
-    renderRegs(idx, "read");
-    animatePacket("03 ◀ dados", "left");
-    logEntry("read", "◀ ESCRAVO → MESTRE  (FC03 leitura)", r, r.explain);
+    if (r.isException) {
+      const excHex = (fc + 0x80).toString(16).toUpperCase();
+      animatePacket(`${excHex} ✕ erro`, "left");
+      logEntry("err", `◀ ESCRAVO → MESTRE  (FC${excHex} Resposta com Exceção)`, r, r.explain);
+    } else {
+      const idx = [];
+      for (let i = 0; i < count; i++) idx.push(addr + i);
+      renderRegs(idx, "read");
+      animatePacket(`${fcHex} ◀ dados`, "left");
+      logEntry("read", `◀ ESCRAVO → MESTRE  (FC${fcHex} Resposta)`, r, r.explain);
+    }
   }, 900);
 }
 
-// ---------- Inicializacao ----------
 async function init() {
   try {
     const w = await tryLoadWasm();
@@ -190,6 +245,42 @@ async function init() {
     ? "motor: C++ / WebAssembly ✓"
     : "motor: JavaScript (espelho do C++)";
 
+  const existingLegend = el("modbusLegend");
+  if (!existingLegend) {
+    const legend = document.createElement("div");
+    legend.id = "modbusLegend";
+    legend.style.display = "flex";
+    legend.style.flexWrap = "wrap";
+    legend.style.gap = "0.8rem";
+    legend.style.justifyContent = "start";
+    legend.style.marginBottom = "1.2rem";
+    legend.style.padding = "0.6rem 0.8rem";
+    legend.style.background = "var(--bg-2)";
+    legend.style.border = "1px solid var(--line)";
+    legend.style.borderRadius = "6px";
+    legend.style.fontSize = "0.68rem";
+    legend.style.fontFamily = "var(--mono)";
+    legend.style.color = "var(--ink-soft)";
+
+    const items = [
+      { color: "var(--amber)", text: "4x Holding (FC03/FC06)" },
+      { color: "var(--cyan)", text: "3x Input Regs (FC04 R/O)" },
+      { color: "var(--ink-soft)", text: "1x Discrete (FC02 R/O)" },
+      { color: "var(--green)", text: "0x Coils (FC01/FC05)" }
+    ];
+
+    items.forEach(item => {
+      const d = document.createElement("div");
+      d.style.display = "flex";
+      d.style.alignItems = "center";
+      d.style.gap = "0.35rem";
+      d.innerHTML = `<span style="display:inline-block; width:9px; height:9px; background:${item.color}; border-radius:2px;"></span><span>${item.text}</span>`;
+      legend.appendChild(d);
+    });
+
+    regGrid.parentNode.insertBefore(legend, regGrid);
+  }
+
   renderRegs([], "");
   el("btnWrite").addEventListener("click", doWrite);
   el("btnRead").addEventListener("click", doRead);
@@ -197,7 +288,6 @@ async function init() {
     log.innerHTML = '<div class="log__empty">Monitor limpo.</div>';
   });
 
-  // Botao de troca RTU <-> ASCII
   const btnMode = el("btnMode");
   function refreshModeButton() {
     btnMode.textContent = "Modo: " + mode;
@@ -207,10 +297,10 @@ async function init() {
     mode = (mode === "RTU") ? "ASCII" : "RTU";
     if (core.setMode) core.setMode(mode === "ASCII" ? 1 : 0);
     refreshModeButton();
-    logEntry("info", "⚙ Modo de transmissao alterado", null,
+    logEntry("info", "⚙ Modo de transmissão alterado", null,
       mode === "ASCII"
         ? "ASCII: cada byte vira 2 caracteres hex, frame entre ':' e <CR><LF>, checksum LRC."
-        : "RTU: bytes binarios crus, checksum CRC16, sem delimitadores.");
+        : "RTU: bytes binários crus, checksum CRC16, sem delimitadores.");
   });
   refreshModeButton();
 }
