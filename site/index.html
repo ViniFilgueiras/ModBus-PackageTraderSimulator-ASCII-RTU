@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Simulador Modbus RTU — Mestre / Escravo</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="dot"></span>
+      <h1>MODBUS<span>·RTU</span></h1>
+    </div>
+    <div class="topbar__right">
+      <button class="modebtn" id="btnMode">Modo: RTU</button>
+      <div class="engine" id="engineStatus">motor: carregando…</div>
+    </div>
+  </header>
+
+  <main class="bus">
+    <!-- ===================== MESTRE ===================== -->
+    <section class="node node--master">
+      <div class="node__tag">MESTRE</div>
+      <h2>Estação de Controle</h2>
+      <p class="node__sub">Envia requisições ao escravo ID 1</p>
+
+      <div class="panel">
+        <div class="field">
+          <label>Registrador (0–15)</label>
+          <input type="number" id="wAddr" min="0" max="15" value="4" />
+        </div>
+        <div class="field">
+          <label>Valor a escrever (0–65535)</label>
+          <input type="number" id="wValue" min="0" max="65535" value="1234" />
+        </div>
+        <button class="btn btn--write" id="btnWrite">
+          Escrever &nbsp;<code>FC 0x06</code>
+        </button>
+      </div>
+
+      <div class="panel">
+        <div class="field">
+          <label>Início da leitura</label>
+          <input type="number" id="rAddr" min="0" max="15" value="0" />
+        </div>
+        <div class="field">
+          <label>Quantos registradores</label>
+          <input type="number" id="rCount" min="1" max="16" value="6" />
+        </div>
+        <button class="btn btn--read" id="btnRead">
+          Ler &nbsp;<code>FC 0x03</code>
+        </button>
+      </div>
+    </section>
+
+    <!-- ===================== BARRAMENTO ===================== -->
+    <section class="wire">
+      <div class="wire__line"></div>
+      <div class="packet" id="packet"></div>
+      <div class="wire__label">barramento serial</div>
+    </section>
+
+    <!-- ===================== ESCRAVO ===================== -->
+    <section class="node node--slave">
+      <div class="node__tag">ESCRAVO · ID 1</div>
+      <h2>Dispositivo de Campo</h2>
+      <p class="node__sub">16 holding registers</p>
+
+      <div class="regs" id="regGrid"></div>
+    </section>
+  </main>
+
+  <!-- ===================== MONITOR ===================== -->
+  <section class="monitor">
+    <div class="monitor__head">
+      <h3>Monitor do Barramento</h3>
+      <button class="btn btn--ghost" id="btnClear">limpar</button>
+    </div>
+    <div class="monitor__log" id="log">
+      <div class="log__empty">Nenhuma transação ainda. Use os botões do mestre.</div>
+    </div>
+  </section>
+
+  <footer class="foot">
+    Núcleo de protocolo em <strong>C++</strong> (WebAssembly) com espelho em JavaScript ·
+    FC03 leitura · FC06 escrita · CRC16 Modbus
+  </footer>
+
+  <script src="modbus-core.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
